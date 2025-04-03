@@ -1,0 +1,15 @@
+services:
+  arxiv-analyzer:
+    build: .
+    container_name: arxiv-analyzer
+    volumes:
+      - ./input/papers:/app/input/papers
+      - ./output/results:/app/output/results
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Cambiar a "no" para evitar reinicio continuo
+    restart: no
+    # Comando explícito para asegurar que use el pipeline completo
+    command: ["--process-all", "--verbose"]
