@@ -12,7 +12,13 @@ import logging
 from typing import Dict, Any, Optional, List
 from openai import OpenAI  # Importación correcta
 
-from llm.prompt_templates import get_paper_analysis_prompt
+from llm.prompt_templates import (
+    get_paper_analysis_prompt, 
+    get_chunk_initial_prompt,
+    get_chunk_middle_prompt,
+    get_chunk_final_prompt,
+    get_consolidation_prompt
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +85,93 @@ class OpenAIClient:
         analysis = self._process_response(response, paper_name)
         
         return analysis
+    
+    def analyze_paper_in_chunks(self, chunks: List[Dict[str, Any]], paper_name: str) -> Dict[str, Any]:
+        """
+        Analiza un paper dividido en chunks y consolida los resultados.
+        
+        Args:
+            chunks: Lista de chunks con texto y metadatos
+            paper_name: Nombre del paper
+            
+        Returns:
+            Diccionario con el análisis consolidado
+        """
+        logger.info(f"Analizando paper en {len(chunks)} chunks: {paper_name}")
+        
+        chunk_results = []
+        
+        # Obtener un análisis para cada chunk
+        for i, chunk in enumerate(chunks):
+            chunk_text = chunk['text']
+            chunk_metadata = chunk['metadata']
+            
+            # Adaptar el prompt para indicar que es parte de un documento mayor
+            section_info = chunk_metadata.get('section', 'texto')
+            part_info = chunk_metadata.get('chunk_part', '')
+            chunk_info = f"Parte {i+1}/{len(chunks)} - Sección: {section_info}"
+            if part_info:
+                chunk_info += f" (Parte {part_info})"
+            
+            logger.info(f"Procesando {chunk_info}")
+            
+            # Usar un prompt específico para chunks
+            if i == 0:
+                # El primer chunk incluye instrucciones de inicio
+                prompt = get_chunk_initial_prompt(chunk_text, chunk_info)
+            elif i == len(chunks) - 1:
+                # El último chunk incluye instrucciones de finalización/resumen
+                prompt = get_chunk_final_prompt(chunk_text, chunk_info)
+            else:
+                # Chunks intermedios
+                prompt = get_chunk_middle_prompt(chunk_text, chunk_info)
+            
+            # Truncar el prompt si es necesario
+            prompt = self._truncate_prompt(prompt)
+            
+            # Realizar llamada a la API
+            response = self._call_api(prompt)
+            
+            # Procesar la respuesta
+            chunk_result = self._process_response(response, f"{paper_name}_chunk_{i+1}")
+            chunk_results.append(chunk_result)
+            
+            # Pausa corta para evitar rate limits
+            time.sleep(1)
+        
+        # Solicitar un resumen final consolidado
+        consolidation_result = self._request_consolidation(chunk_results, paper_name)
+        
+        return consolidation_result
+
+    def _request_consolidation(self, chunk_results: List[Dict[str, Any]], paper_name: str) -> Dict[str, Any]:
+        """
+        Solicita al LLM que consolide los resultados de múltiples chunks.
+        
+        Args:
+            chunk_results: Lista de resultados por chunk
+            paper_name: Nombre del paper
+            
+        Returns:
+            Análisis consolidado
+        """
+        # Extraer información relevante de cada chunk
+        consolidated_data = []
+        for i, result in enumerate(chunk_results):
+            consolidated_data.append({
+                "parte": i+1,
+                "resumen": result.get("resumen", "No disponible"),
+                "resultados": result.get("resultados", "No disponible")
+            })
+        
+        # Crear prompt para consolidación
+        consolidation_prompt = get_consolidation_prompt(chunk_results, paper_name)
+        
+        # Llamar a la API
+        response = self._call_api(consolidation_prompt)
+        
+        # Procesar respuesta
+        return self._process_response(response, paper_name)
     
     def _truncate_prompt(self, prompt: str) -> str:
         """
@@ -241,3 +334,22 @@ def analyze_paper(paper_text: str, paper_name: str,
     """
     client = OpenAIClient(model=model, temperature=temperature)
     return client.analyze_paper(paper_text, paper_name)
+
+# Función de conveniencia para análisis por chunks
+def analyze_paper_chunks(chunks: List[Dict[str, Any]], paper_name: str,
+                        model: str = "gpt-4",
+                        temperature: float = 0.2) -> Dict[str, Any]:
+    """
+    Función auxiliar para analizar un paper dividido en chunks.
+    
+    Args:
+        chunks: Lista de chunks con texto y metadatos
+        paper_name: Nombre del paper
+        model: Modelo de OpenAI
+        temperature: Temperatura para generación
+        
+    Returns:
+        Diccionario con el análisis consolidado
+    """
+    client = OpenAIClient(model=model, temperature=temperature)
+    return client.analyze_paper_in_chunks(chunks, paper_name)

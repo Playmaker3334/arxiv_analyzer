@@ -13,8 +13,8 @@ from typing import List, Dict, Any, Optional
 from config.settings import LLM_CONFIG
 from input.file_manager import get_paper_files, check_file_processed, get_file_metadata
 from processing.pdf_extractor import extract_text_from_pdf
-from processing.text_preprocessor import preprocess_text
-from llm.openai_client import analyze_paper
+from processing.text_preprocessor import preprocess_text, split_text_into_chunks
+from llm.openai_client import analyze_paper, analyze_paper_chunks
 from output.json_formatter import save_paper_analysis, format_json_for_human
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ class Pipeline:
     
     def process_paper(self, pdf_path: str) -> Dict[str, Any]:
         """
-        Procesa un paper específico.
+        Procesa un paper específico utilizando el enfoque de chunks.
         
         Args:
             pdf_path: Ruta al archivo PDF
@@ -102,18 +102,27 @@ class Pipeline:
             logger.info("Extrayendo texto del PDF")
             text, metadata = extract_text_from_pdf(pdf_path)
             
-            # Paso 2: Preprocesar el texto
-            logger.info("Preprocesando texto")
-            processed_text = preprocess_text(text, metadata)
+            # Aplicar limpieza básica
+            text = split_text_into_chunks(text, metadata)[0]['text']  # Usar solo la función de limpieza
             
-            # Paso 3: Analizar con LLM
-            logger.info("Analizando con LLM")
-            analysis = analyze_paper(
-                processed_text, 
-                paper_name,
-                model=self.llm_model,
-                temperature=self.llm_temperature
-            )
+            # Paso 2: Dividir en chunks
+            logger.info("Dividiendo texto en chunks")
+            chunks = split_text_into_chunks(text, metadata)
+            
+            # Verificar si vale la pena procesar por chunks
+            if len(chunks) <= 1:
+                # Si solo hay un chunk, usar el método tradicional
+                logger.info("El paper cabe en un solo chunk, procesando de forma tradicional")
+                processed_text = preprocess_text(text, metadata)
+                analysis = analyze_paper(processed_text, paper_name, 
+                                         model=self.llm_model, 
+                                         temperature=self.llm_temperature)
+            else:
+                # Procesar por chunks
+                logger.info(f"Paper dividido en {len(chunks)} chunks, procesando por partes")
+                analysis = analyze_paper_chunks(chunks, paper_name, 
+                                               model=self.llm_model, 
+                                               temperature=self.llm_temperature)
             
             # Paso 4: Guardar resultados
             logger.info("Guardando resultados")
