@@ -23,7 +23,7 @@ class OpenAIClient:
                  api_key: Optional[str] = None, 
                  model: str = "gpt-4", 
                  temperature: float = 0.2,
-                 max_tokens: int = 8000,
+                 max_tokens: int = 1000,  # Valor por defecto más bajo
                  max_retries: int = 3,
                  retry_delay: int = 5):
         """
@@ -44,13 +44,14 @@ class OpenAIClient:
         
         self.model = model
         self.temperature = temperature
-        self.max_tokens = max_tokens
+        # Usar el valor del entorno si está disponible, sino el proporcionado como argumento
+        self.max_tokens = int(os.getenv("MAX_TOKENS", max_tokens))
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         
         # Inicializar cliente de OpenAI - Actualizado para la versión actual
         self.client = OpenAI(api_key=self.api_key)
-        logger.info(f"Cliente OpenAI inicializado con modelo {self.model}")
+        logger.info(f"Cliente OpenAI inicializado con modelo {self.model}, max_tokens={self.max_tokens}")
     
     def analyze_paper(self, paper_text: str, paper_name: str) -> Dict[str, Any]:
         """
@@ -68,6 +69,9 @@ class OpenAIClient:
         # Obtener el prompt para el análisis
         prompt = get_paper_analysis_prompt(paper_text)
         
+        # Truncar el prompt si es demasiado largo
+        prompt = self._truncate_prompt(prompt)
+        
         # Realizar llamada a la API
         response = self._call_api(prompt)
         
@@ -75,6 +79,50 @@ class OpenAIClient:
         analysis = self._process_response(response, paper_name)
         
         return analysis
+    
+    def _truncate_prompt(self, prompt: str) -> str:
+        """
+        Trunca el prompt para asegurarse de que está dentro de los límites del modelo.
+        
+        Args:
+            prompt: El prompt original
+            
+        Returns:
+            El prompt truncado
+        """
+        # Estimar límite de caracteres para prompt (considerando que ~4 caracteres = 1 token)
+        # Reservar espacio para 1500 tokens de respuesta (6,000 caracteres aprox.)
+        # El total no debe exceder ~8,000 tokens, así que permitimos ~6,500 tokens para el prompt
+        max_prompt_chars = 6500 * 4  # ~26,000 caracteres
+        
+        if len(prompt) <= max_prompt_chars:
+            return prompt
+            
+        logger.warning(f"Prompt demasiado largo ({len(prompt)} caracteres). Truncando...")
+        
+        # Encontrar las secciones del prompt
+        prompt_parts = prompt.split("-----")
+        
+        if len(prompt_parts) < 3:
+            # Si no podemos identificar la estructura, truncamos simplemente
+            return prompt[:max_prompt_chars]
+        
+        # Mantener la introducción y las instrucciones finales
+        intro = prompt_parts[0]
+        paper_content = prompt_parts[1]
+        outro = prompt_parts[2]
+        
+        # Calcular cuánto espacio tenemos para el contenido del paper
+        available_chars = max_prompt_chars - len(intro) - len(outro) - 10  # 10 para los separadores
+        
+        # Truncar el contenido del paper
+        truncated_paper = paper_content[:available_chars] + "... [texto truncado]"
+        
+        # Reconstruir el prompt
+        truncated_prompt = intro + "-----" + truncated_paper + "-----" + outro
+        
+        logger.debug(f"Prompt truncado a {len(truncated_prompt)} caracteres")
+        return truncated_prompt
     
     def _call_api(self, prompt: str) -> Dict[str, Any]:
         """
@@ -89,6 +137,10 @@ class OpenAIClient:
         Raises:
             Exception: Si todos los reintentos fallan
         """
+        # Asegurarse de que max_tokens no exceda límites seguros
+        # Para GPT-4, reservar al menos 6,500 tokens para el input, dejando ~1,500 para output
+        safe_max_tokens = min(self.max_tokens, 1000)  # Más restrictivo para asegurar que funcione
+        
         for attempt in range(self.max_retries):
             try:
                 logger.debug(f"Intentando llamada a API (intento {attempt + 1}/{self.max_retries})")
@@ -100,7 +152,7 @@ class OpenAIClient:
                         {"role": "user", "content": prompt}
                     ],
                     temperature=self.temperature,
-                    max_tokens=self.max_tokens
+                    max_tokens=safe_max_tokens
                 )
                 
                 return completion
