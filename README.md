@@ -45,5 +45,4 @@ This project lets you:
 ## Basic Usage
 
 ```bash
-# (Assumes you have a Python 3.8+ environment)
-pip install -r requirements.txt
+docker compose build - docker compose up
